@@ -1,0 +1,5 @@
+Activated conda env: narwhal
+bempp 0.4.2
+FMM (exafmm): NOT available -- BEM will use hmat fallback
+[BEM] using assembler='default_nonlocal'
+[BEM]    20 kHz  nodes=  1840  h=12.08mm  asm=default_nonlocal  ~0.0GB

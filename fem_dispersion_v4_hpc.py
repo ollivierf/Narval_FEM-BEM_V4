@@ -35,11 +35,53 @@ from petsc4py import PETSc
 import ufl
 from dolfinx import fem, default_scalar_type
 from dolfinx.fem import petsc as fem_petsc
-from dolfinx.io import gmshio
 import postprocess_dispersion as pp
+
+# --- gmshio import shim ------------------------------------------------------
+# dolfinx renamed dolfinx.io.gmshio -> dolfinx.io.gmsh in v0.10 AND changed the
+# return signature of read_from_msh() from a 3-tuple to a MeshData named-tuple.
+# Some conda-forge builds also expose neither (no GMSH support compiled in),
+# in which case we fall back to meshio + dolfinx.mesh.create_mesh.
+try:
+    from dolfinx.io import gmshio as _gmshio                     # < 0.10
+    _GMSH_FLAVOR = "gmshio"
+except ImportError:
+    try:
+        from dolfinx.io import gmsh as _gmshio                   # >= 0.10
+        _GMSH_FLAVOR = "gmsh"
+    except ImportError:
+        _gmshio = None
+        _GMSH_FLAVOR = None
+
+def read_msh(path, comm, gdim=2):
+    """Read a .msh file into (mesh, cell_tags, facet_tags), normalising across
+    dolfinx versions:
+      * <0.10 returns a 3-tuple from gmshio.read_from_msh,
+      * >=0.10 returns a MeshData dataclass with .mesh / .cell_tags / .facet_tags,
+      * if dolfinx has no GMSH support at all we use meshio as a fallback."""
+    if _gmshio is not None and hasattr(_gmshio, "read_from_msh"):
+        out = _gmshio.read_from_msh(path, comm, rank=0, gdim=gdim)
+        # MeshData (v0.10+) is iterable but has named attributes
+        if hasattr(out, "mesh"):
+            return out.mesh, out.cell_tags, out.facet_tags
+        return out                                              # legacy 3-tuple
+    # fallback: meshio bridge
+    import meshio
+    from dolfinx.mesh import create_mesh
+    m = meshio.read(path)
+    cells = m.get_cells_type("triangle")
+    points = m.points[:, :gdim]
+    raise ImportError(
+        "dolfinx has no gmshio support in this env; manual meshio fallback "
+        "would be needed.  Install fenics-dolfinx with GMSH support or use "
+        "a dolfinx>=0.7 build from conda-forge.")
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
+if rank == 0:
+    import dolfinx
+    print(f"[FEM v4] dolfinx {dolfinx.__version__} | gmshio path: {_GMSH_FLAVOR}",
+          flush=True)
 
 # ----------------------------- CLI / parameters ----------------------------
 ap = argparse.ArgumentParser()
@@ -76,7 +118,7 @@ TAG = cfg["mesh"]["domain_tags"]; BND = cfg["mesh"]["boundary_tags"]; AXIS_TAG =
 def rout(z): return Rob + (Rot - Rob)*z/L
 
 # ----------------------------- mesh & materials -----------------------------
-domain, cell_tags, facet_tags = gmshio.read_from_msh(MESH_FILE, comm, rank=0, gdim=2)
+domain, cell_tags, facet_tags = read_msh(MESH_FILE, comm, gdim=2)
 tdim = domain.topology.dim; fdim = tdim-1
 domain.topology.create_connectivity(fdim, tdim)
 
@@ -209,7 +251,13 @@ res = (m_form(avg(a_old, a_n, a_m), w_) + c_form(avg(v_old, v_expr(a_n), a_f), w
        + k_form(avg(u_old, u_, a_f), w_) - f_form(w_))
 a_bilin = fem.form(ufl.lhs(res)); L_lin = fem.form(ufl.rhs(res))
 A = fem_petsc.assemble_matrix(a_bilin, bcs=bcs); A.assemble()
-b = fem_petsc.create_vector(L_lin)
+# dolfinx 0.10 changed create_vector to take a FunctionSpace (or sequence of)
+# instead of a Form. The shim below keeps the script working on both old (<0.10,
+# Form-based) and new (>=0.10, FunctionSpace-based) signatures.
+try:
+    b = fem_petsc.create_vector(L_lin)                    # dolfinx < 0.10
+except TypeError:
+    b = fem_petsc.create_vector(V)                        # dolfinx >= 0.10
 solver = PETSc.KSP().create(comm); solver.setOperators(A)
 solver.setType(PETSc.KSP.Type.PREONLY); solver.getPC().setType(PETSc.PC.Type.LU)
 try: solver.getPC().setFactorSolverType("mumps")

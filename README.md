@@ -125,13 +125,66 @@ Route 2 (couplage **two-way** FEM-BEM) : structure documentée dans le script.
 
 ### Exécution sur MeSU/MCMeSU (SLURM)
 ```bash
-bash hpc/env_mesu.sh                        # crée l'env conda ./tusk (FEniCSx+bempp+FMM)
+# 1) préparer l'environnement (réutilise l'env 'narwhal' v3 par défaut,
+#    et y ajoute seulement le backend FMM (exafmm-t) requis par la BEM v4)
+bash hpc/env_mesu.sh
+# ou pour un autre env existant :    TUSK_ENV=monenv bash hpc/env_mesu.sh
+# ou pour un env-prefix local       : TUSK_ENV=./tusk bash hpc/env_mesu.sh
+
+# 2) soumettre les jobs (lisent $TUSK_ENV; même défaut 'narwhal')
 sbatch hpc/job_fem_dispersion_v4.slurm      # dispersion numérique L/T/F (3 modes)
 sbatch hpc/job_bem_radiation_v4.slurm       # rayonnement numérique (FMM, ~32 Go)
 ```
+
 Les jobs travaillent dans `$SCRATCH` (charte MeSU : pas de calcul dans `$HOME`),
 recopient les entrées, puis rapatrient les sorties dans `$SLURM_SUBMIT_DIR`.
 Plus de chemin codé en dur (le v3 pointait `/home/ollivief/...`).
+
+**Réutilisation de l'env conda existant.** `env_mesu.sh` est un **outil de
+diagnostic** : il active l'env `narwhal` (ou celui défini par `$TUSK_ENV`),
+sonde les paquets attendus (`dolfinx`, `bempp-cl`, `gmsh`, etc.) et **affiche
+ce qui manque** sans tenter d'installer quoi que ce soit via `conda` —
+parce que le solveur conda peut épuiser la RAM disponible sur la frontale
+MeSU. Si vous voulez quand même tenter une installation, passez
+`AUTO_INSTALL=1` (qui n'utilise alors que `pip`, beaucoup plus léger).
+
+**Détection multi-nom de `bempp-cl`.** Selon la version, l'API s'importe
+sous `bempp.api` (≤0.4.x, dont la version 0.4.2 présente dans `narwhal`) ou
+sous `bempp_cl.api` (versions plus récentes). Le script de diagnostic et le
+script BEM essayent les deux noms via une fonction `_import_bempp()`, ce qui
+les rend portables entre les deux versions.
+
+**Choix automatique de l'assembleur BEM.** À l'exécution, `bem_radiation_v4_hpc.py`
+choisit le meilleur assembleur disponible parmi ceux exposés par bempp-cl 0.4.x :
+```
+fmm               (si exafmm importable ; ~3.5 ko/DOF)
+  ↓ sinon
+default_nonlocal  (JIT OpenCL/Numba matrix-FREE ; ~1.5 ko/DOF)
+  ↓ sinon
+dense             (avec garde-fou strict ; saute toute fréquence dépassant MEM_BUDGET_GB)
+```
+La décision est prise **paresseusement** : aucun "probe operator" coûteux
+au démarrage. Si l'assembleur choisi échoue lors de la première vraie
+assemblée, le script bascule sur l'option suivante et reprend. Le log
+indique clairement la décision finale (`[BEM] using assembler='default_nonlocal'`
+etc.).
+
+⚠ **Note importante :** l'ancien mot-clé `hmat` (bempp 0.2.x) **n'existe pas**
+dans bempp-cl 0.4.x. Le mode matrix-free `default_nonlocal` joue le rôle
+équivalent ; il est encore plus économe en mémoire (la matrice complète n'est
+jamais matérialisée — chaque produit matrice-vecteur du GMRES est évalué à la
+volée par OpenCL/Numba), au prix d'un coût par itération plus élevé.
+
+**Note importante : `exafmm-t` n'est pas un paquet pip et n'est pas sur
+conda-forge sur MeSU.** Pour avoir spécifiquement FMM, il faut le construire
+depuis les sources sur un nœud de calcul :
+```bash
+git clone https://github.com/exafmm/exafmm-t.git
+cd exafmm-t && ./configure && make && make install && python setup.py install
+```
+Sinon, le BEM utilise `default_nonlocal` qui consomme ~1.5 ko/DOF (~0.1 Go
+pour 60 k nœuds, contre ~50 Go en dense). Le crash à 415 GiB de v3 ne peut
+donc plus revenir.
 
 Remerciement requis dans toute publication :
 > « This work was granted access to the HPC resources of the SACADO MeSU
@@ -145,6 +198,8 @@ Remerciement requis dans toute publication :
 cylindrical_dispersion.py     NOUVEAU moteur v4 : 3 potentiels -> L, T, F (+ fuite, inversion)
 run_analytic_v4.py            pilote analytique -> dispersion L/T/F, f-k, cg, fuite
 radiation_farfield_v4.py      rayonnement champ lointain (modes rayonnants L+F ; torsion exclue)
+run_analytic_F11.py           pilote analytique RESTREINT au seul fondamental F(1,1)
+radiation_farfield_F11.py     rayonnement RESTREINT au seul F(1,1) (lit data/F11_modes.npz)
 fem_dispersion_v4_hpc.py      FEM Fourier-mode (--mode long|torsion|flexion) -> f-k numérique
 bem_radiation_v4_hpc.py       BEM FMM, maillage adaptatif, garde mémoire -> rayonnement numérique
 generate_axisymmetric_mesh.py maillage méridien (r,z) (inchangé v3 ; utilisé par le FEM)

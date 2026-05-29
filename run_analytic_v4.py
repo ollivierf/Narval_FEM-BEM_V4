@@ -36,8 +36,8 @@ os.makedirs("data", exist_ok=True)
 E, NU, RHO = 10.3e9, 0.30, 1900.0       # dentine (axial/stiff direction)
 RHO0, C0   = 1025.0, 1450.0             # arctic seawater (~-1.5 C, S~34.5)
 R_GUIDE    = 0.0287                      # outer radius at base [m] (guiding cylinder)
-F_LO, F_HI, F_STEP = 10e3, 150e3, 1e3
-CPH_MIN, CPH_MAX   = 300.0, 3000.0
+F_LO, F_HI, F_STEP = 20e3, 200e3, 1e3
+CPH_MIN, CPH_MAX   = 300.0, 9000.0
 N_SCAN     = 3000
 N_TORSION  = 4
 M_FLEX     = (1,)                         # azimuthal orders for flexion fundamentals
@@ -68,11 +68,33 @@ np.savez("data/analytic_modes_v4.npz", **save)
 fig, ax = plt.subplots(figsize=(8.6, 5.8))
 colL = plt.cm.Blues(np.linspace(0.45, 0.95, max(len(fam['L']), 1)))
 colF = plt.cm.Greens(np.linspace(0.55, 0.9, max(len(fam['F1']), 1)))
+
+def _interp_small_gaps(c, max_gap=3):
+    """Linearly fill runs of <=max_gap NaNs in cph so the plot line is continuous
+    across single-frequency root-detection misses (the underlying npz data keeps
+    the NaNs exact: this is a plot-only smoothing)."""
+    c = np.asarray(c, float).copy()
+    if c.size == 0: return c
+    isn = np.isnan(c)
+    if not isn.any(): return c
+    i = 0
+    while i < c.size:
+        if not isn[i]:
+            i += 1; continue
+        j = i
+        while j < c.size and isn[j]:
+            j += 1
+        run = j - i
+        if run <= max_gap and i > 0 and j < c.size:
+            c[i:j] = np.linspace(c[i-1], c[j], run+2)[1:-1]
+        i = j
+    return c
+
 for n, b in enumerate(fam['L']):
-    ax.plot(b['f']/1e3, b['cph'], color=colL[n], lw=1.8,
+    ax.plot(b['f']/1e3, _interp_small_gaps(b['cph']), color=colL[n], lw=1.8,
             label="L(0,n)" if n == 0 else None)
 for n, b in enumerate(fam['F1']):
-    ax.plot(b['f']/1e3, b['cph'], color="#1a9850", lw=2.4, ls="-",
+    ax.plot(b['f']/1e3, _interp_small_gaps(b['cph']), color="#1a9850", lw=2.4, ls="-",
             label="F(1,1) flexion")
 # torsion: dark modes, dashed grey
 for n, b in enumerate(fam['T']):
@@ -100,10 +122,10 @@ print("wrote figures/dispersion_cph_v4.png")
 # ============================ FIG 2 : f-k ==================================
 fig, ax = plt.subplots(figsize=(7.8, 6.2))
 for n, b in enumerate(fam['L']):
-    ax.plot(b['k'], b['f']/1e3, color="#2171b5", lw=1.4,
+    ax.plot(_interp_small_gaps(b['k']), b['f']/1e3, color="#2171b5", lw=1.4,
             label="L(0,n)" if n == 0 else None)
 for b in fam['F1']:
-    ax.plot(b['k'], b['f']/1e3, color="#1a9850", lw=2.0, label="F(1,1)")
+    ax.plot(_interp_small_gaps(b['k']), b['f']/1e3, color="#1a9850", lw=2.0, label="F(1,1)")
 for n, b in enumerate(fam['T']):
     ax.plot(b['k'], b['f']/1e3, color="0.45", lw=1.4, ls="--",
             label="T(0,n) (sombre)" if n == 0 else None)

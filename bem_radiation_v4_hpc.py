@@ -37,12 +37,27 @@ import numpy as np
 import yaml
 import cylindrical_dispersion as C
 
+# --- bempp import shim ------------------------------------------------------
+# bempp-cl exposed its API at 'bempp.api' through 0.4.x and renamed it to
+# 'bempp_cl.api' in newer upstream builds.  Find whichever one works in the
+# active env so the rest of this script can just `bem = _import_bempp()`.
+def _import_bempp():
+    last = None
+    for name in ("bempp.api", "bempp_cl.api"):
+        try:
+            return __import__(name, fromlist=["api"])
+        except Exception as e:                # ImportError, or transitive break
+            last = e
+    raise ImportError(
+        "Neither 'bempp.api' nor 'bempp_cl.api' could be imported. "
+        f"Last error: {last}.  Check the env (e.g. `pip show bempp-cl`).")
+
 # ----------------------------- parameters ----------------------------------
 CONFIG_FILE   = "config.txt"
-FREQS         = np.arange(20e3, 200e3+1, 5e3)
+FREQS         = np.arange(20e3, 200e3+1, 1e3)
 N_THETA       = 361
 ELELAM        = 6.0                 # target elements per acoustic wavelength
-N_NODES_MAX   = 120_000             # hard cap on surface nodes (FMM still O(NlogN))
+N_NODES_MAX   = 120_000             # hard cap on surface nodes
 MEM_BUDGET_GB = 100.0               # refuse/coarsen configs beyond this working set
 GMRES_TOL     = 1e-4
 FMM_EXPANSION = 5                   # multipole expansion order (accuracy/speed)
@@ -136,25 +151,87 @@ def build_surface_mesh(f, fname):
     gmsh.finalize()
     return fname, nn, h_el
 
-def fmm_mem_estimate_gb(n_nodes):
-    """Rough FMM working-set estimate (GB): near-field blocks + multipole data.
-    FMM is ~O(N log N); the constant here is deliberately conservative."""
+def assembler_mem_estimate_gb(n_nodes, assembler):
+    """Rough working-set estimate (GB) for the chosen bempp-cl assembler with
+    the four operators (SLP, DLP, ADLP, HypS) of a Burton-Miller CFIE.
+    Calibrated against bempp-cl's typical per-DOF footprint:
+       fmm               ~3.5 kB/DOF (near-field blocks + log(N) multipole)
+       default_nonlocal  ~1.5 kB/DOF (matrix-free; only singular caches stored)
+       dense             16 N^2 bytes (the v3 failure mode)"""
     n = float(n_nodes)
-    return 16.0 * n * math.log2(max(n, 2.0)) * 64 / 2**30   # bytes -> GiB
+    if assembler == "dense":
+        return 16.0 * n * n / 2**30
+    per_dof = {"fmm": 3500.0, "default_nonlocal": 1500.0}.get(assembler, 3500.0)
+    return (per_dof * n + 16.0 * n * math.log2(max(n, 2.0))) / 2**30
+
+# kept as an alias for backwards compatibility with earlier scripts/logs
+def fmm_mem_estimate_gb(n_nodes):
+    return assembler_mem_estimate_gb(n_nodes, "fmm")
 
 # =============================================================================
-#  ROUTE 1 : one-way exterior Helmholtz radiation (bempp-cl, FMM, Burton-Miller)
+#  Assembler selection: pick the best memory-safe assembler bempp-cl exposes.
+#  Preference order for bempp-cl 0.4.x (the version in narwhal, see docs at
+#  bempp-cl.readthedocs.io/en/latest/docs/bempp_cl/api/operators/boundary/helmholtz/):
+#      1. "fmm"               O(N log N) memory; needs exafmm
+#      2. "default_nonlocal"  matrix-FREE JIT (OpenCL or Numba); minimal RAM
+#      3. "dense"             O(N^2) -- only acceptable when N is tiny
+#  NOTE: the legacy "hmat" keyword from bempp 0.2.x is NOT supported by
+#  bempp-cl 0.4.x.  In matrix-free mode 'default_nonlocal' produces the same
+#  weak_form LinearOperator usable by GMRES; per-iteration cost is higher than
+#  FMM's, but RAM is tiny because the full matrix is never materialised.
+# =============================================================================
+_ASSEMBLER = None
+
+def _detect_assembler_capabilities():
+    """Inspect imports only (no expensive operator probe) to make a best guess."""
+    try:
+        import exafmm  # noqa: F401
+        return ["fmm", "default_nonlocal", "dense"]
+    except Exception:
+        return ["default_nonlocal", "dense"]
+
+def _set_assembler(name):
+    global _ASSEMBLER
+    _ASSEMBLER = name
+    print(f"[BEM] using assembler='{name}'", flush=True)
+
+def _current_assembler():
+    global _ASSEMBLER
+    if _ASSEMBLER is None:
+        order = _detect_assembler_capabilities()
+        _set_assembler(order[0])
+    return _ASSEMBLER
+
+def _try_build_op(opfn, *args, **kwargs):
+    """Build a boundary operator, falling back to a cheaper assembler if the
+    requested one raises (e.g. assembler='fmm' but exafmm not actually wired)."""
+    order = _detect_assembler_capabilities()
+    cur = _current_assembler()
+    todo = [cur] + [a for a in order if a != cur]
+    last_err = None
+    for asm in todo:
+        try:
+            return opfn(*args, **kwargs, assembler=asm), asm
+        except Exception as e:
+            last_err = e
+            print(f"[BEM] assembler='{asm}' failed: {e}; trying next.", flush=True)
+    raise RuntimeError(f"All assemblers failed; last error: {last_err}")
+
+# =============================================================================
+#  ROUTE 1 : one-way exterior Helmholtz radiation (bempp-cl, Burton-Miller)
 # =============================================================================
 def radiate_oneway(f, grid, theta):
-    import bempp.api as bem
-    from bempp.api.linalg import gmres
-    # bempp-cl selects FMM purely via the per-operator assembler="fmm" keyword
-    # (there is NO global "boundary_operator_assembly_type" as in legacy BEM++).
-    # Optionally tune FMM accuracy if the attribute exists in this bempp-cl build:
+    bem = _import_bempp()
     try:
-        bem.GLOBAL_PARAMETERS.fmm.expansion_order = FMM_EXPANSION
-    except Exception:
-        pass
+        from bempp.api.linalg import gmres
+    except ImportError:
+        from bempp_cl.api.linalg import gmres
+    # Optionally tune FMM accuracy if the attribute exists in this bempp-cl build:
+    if _current_assembler() == "fmm":
+        try:
+            bem.GLOBAL_PARAMETERS.fmm.expansion_order = FMM_EXPANSION
+        except Exception:
+            pass
 
     w = 2*math.pi*f
     k0 = w/C0
@@ -171,12 +248,18 @@ def radiate_oneway(f, grid, theta):
         result[0] = prefac*np.exp(-alpha_f*s)*np.exp(1j*beta_f*s)
     rhs_neu = bem.GridFunction(space, fun=neumann_data)
 
-    # FMM-assembled boundary operators
+    # Boundary operators with adaptive-fallback assembler:
     ident = bem.operators.boundary.sparse.identity(space, space, space)
-    dlp = bem.operators.boundary.helmholtz.double_layer(space, space, space, k0, assembler="fmm")
-    slp = bem.operators.boundary.helmholtz.single_layer(space, space, space, k0, assembler="fmm")
-    hyp = bem.operators.boundary.helmholtz.hypersingular(space, space, space, k0, assembler="fmm")
-    adj = bem.operators.boundary.helmholtz.adjoint_double_layer(space, space, space, k0, assembler="fmm")
+    dlp, asm = _try_build_op(bem.operators.boundary.helmholtz.double_layer,
+                             space, space, space, k0)
+    if asm != _current_assembler():               # remember the working choice
+        _set_assembler(asm)
+    slp, _ = _try_build_op(bem.operators.boundary.helmholtz.single_layer,
+                           space, space, space, k0)
+    hyp, _ = _try_build_op(bem.operators.boundary.helmholtz.hypersingular,
+                           space, space, space, k0)
+    adj, _ = _try_build_op(bem.operators.boundary.helmholtz.adjoint_double_layer,
+                           space, space, space, k0)
 
     # Burton-Miller CFIE (eta = i/k0) removes fictitious interior eigenfrequencies
     eta = 1j/k0
@@ -206,15 +289,19 @@ def solve_coupled(f, vol_msh, surf_msh):
 #  driver (Route 1) with per-band meshing and memory guard
 # =============================================================================
 def main():
-    import bempp.api as bem
+    bem = _import_bempp()
+    asm = _current_assembler()             # lazy: 'fmm' if exafmm, else 'hmat'
     theta = np.linspace(0.0, math.pi, N_THETA)
     P = np.zeros((len(FREQS), N_THETA))
     meta = []
     for i, f in enumerate(FREQS):
         msh = f"tusk_surface_{f/1e3:.0f}kHz.msh"
         path, nn, h_el = build_surface_mesh(f, msh)
-        mem = fmm_mem_estimate_gb(nn)
-        tag = f"[BEM] {f/1e3:5.0f} kHz  nodes={nn:6d}  h={h_el*1e3:.2f}mm  ~{mem:.1f}GB"
+        # the assembler may have been downgraded since the loop started; refresh
+        asm = _current_assembler()
+        mem = assembler_mem_estimate_gb(nn, asm)
+        tag = (f"[BEM] {f/1e3:5.0f} kHz  nodes={nn:6d}  h={h_el*1e3:.2f}mm  "
+               f"asm={asm}  ~{mem:.1f}GB")
         if mem > MEM_BUDGET_GB:
             print(tag + "  -> SKIP (exceeds MEM_BUDGET_GB)")
             meta.append((f, nn, h_el, mem, "skipped"))

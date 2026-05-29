@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/scratch/ollivief/tusk_fem_1469977/fem_dispersion_v4_hpc.py", line 322, in <module>
+    ax.pcolormesh(k, f/1e3, 10*np.log10(Amp.T/Amp.max()+1e-6),
+  File "/home/ollivief/.conda/envs/narwhal/lib/python3.11/site-packages/matplotlib/__init__.py", line 1524, in inner
+    return func(
+           ^^^^^
+  File "/home/ollivief/.conda/envs/narwhal/lib/python3.11/site-packages/matplotlib/axes/_axes.py", line 6528, in pcolormesh
+    X, Y, C, shading = self._pcolorargs('pcolormesh', *args,
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ollivief/.conda/envs/narwhal/lib/python3.11/site-packages/matplotlib/axes/_axes.py", line 6060, in _pcolorargs
+    raise TypeError(f"Dimensions of C {C.shape} should"
+TypeError: Dimensions of C (513, 1355) should be one smaller than X(513) and Y(1355) while using shading='flat' see help(pcolormesh)

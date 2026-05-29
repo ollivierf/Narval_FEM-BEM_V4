@@ -195,35 +195,52 @@ def flexion_roots_at_freq(f, m, cL, cT, R, rho, cph_min, cph_max, n_scan=4000):
 # 4. branch continuation (shared by L and F families) -- continuity in cph
 # ----------------------------------------------------------------------------
 def trace_fundamental(freqs, detfun_at, k_seed, cph_window=0.5):
-    """Robustly trace ONE branch (e.g. the F(1,1) flexural fundamental) by local
-    continuation: at each frequency, bracket the single root nearest the previous
-    k, searching only a narrow window around the linear prediction. This sidesteps
-    the dense spurious-root cluster of the brute-force scan in cph in [cT,cL].
+    """Trace ONE branch (e.g. the F(1,1) flexural fundamental) by local
+    continuation in the PHASE VELOCITY cph (not in k).  At each frequency we
+    bracket the sign change of detfun whose cph is closest to a linear/quadratic
+    extrapolation of the previous cph values; this selection is robust under
+    refinement of the frequency grid (a property the k-distance heuristic does
+    NOT have: with a coarse F_STEP and a wide k-window, k_pred is pulled toward
+    the previous k while the true next root has moved a lot in k, so the wrong
+    branch sometimes wins).
+
+    The cph window cph_window is RELATIVE: |cph - cph_pred| < cph_window*cph_pred.
 
     detfun_at(w,k) -> real determinant; k_seed = starting wavenumber at freqs[0]."""
     fs = np.asarray(freqs, float)
     out_f, out_k, out_c = [], [], []
-    k_prev = k_seed
-    k_prevprev = None
     for f in fs:
         w = 2*np.pi*f
-        # predict next k by linear extrapolation if we have two points
-        if k_prevprev is not None and len(out_f) >= 2:
-            k_pred = 2*out_k[-1] - out_k[-2]
+        # predict next cph by extrapolation IN FREQUENCY (not in index), so the
+        # tracer behaves the same whether F_STEP is 5 kHz or 1 kHz.
+        if len(out_f) >= 2:
+            # linear in (f, cph); quadratic if we have 3+ points
+            if len(out_f) >= 3:
+                cph_pred = float(np.polyval(
+                    np.polyfit(out_f[-3:], out_c[-3:], 2), f))
+            else:
+                slope = (out_c[-1] - out_c[-2])/(out_f[-1] - out_f[-2])
+                cph_pred = out_c[-1] + slope*(f - out_f[-1])
+        elif len(out_f) == 1:
+            cph_pred = out_c[-1]
         else:
-            k_pred = k_prev
-        # search window around prediction
-        dk = cph_window*abs(k_pred) + 1e-3
-        ka, kb = max(k_pred-dk, 1e-3), k_pred+dk
-        ks = np.linspace(ka, kb, 400)
+            cph_pred = w/k_seed
+        # search a cph-window around the prediction (convert to a k-bracket).
+        # cph_window is relative; keep it generous early on (no slope yet) and
+        # tighten once a clear trend exists.
+        win = cph_window if len(out_f) < 2 else min(cph_window, 0.15)
+        cph_lo = max(cph_pred*(1-win), 1.0)
+        cph_hi = cph_pred*(1+win)
+        k_lo = w/cph_hi; k_hi = w/cph_lo
+        ks = np.linspace(k_lo, k_hi, 400)
         vals = np.array([detfun_at(w, k) for k in ks])
         sgn = np.sign(vals)
         idx = np.where(np.diff(sgn) != 0)[0]
         if len(idx) == 0:
-            break                                   # branch lost (e.g. cutoff)
-        # pick the sign-change bracket whose midpoint is closest to k_pred
-        mids = 0.5*(ks[idx]+ks[idx+1])
-        j = idx[np.argmin(np.abs(mids - k_pred))]
+            break                                  # branch lost (e.g. cutoff)
+        # pick the sign-change bracket whose CPH-midpoint is closest to cph_pred
+        cph_mids = w/(0.5*(ks[idx]+ks[idx+1]))
+        j = idx[np.argmin(np.abs(cph_mids - cph_pred))]
         kA, kB = ks[j], ks[j+1]; fA = vals[j]
         for _ in range(60):
             km = 0.5*(kA+kB); fm = detfun_at(w, km)
@@ -235,42 +252,140 @@ def trace_fundamental(freqs, detfun_at, k_seed, cph_window=0.5):
                 kA, fA = km, fm
         kr = 0.5*(kA+kB)
         out_f.append(f); out_k.append(kr); out_c.append(w/kr)
-        k_prevprev = k_prev; k_prev = kr
     out_f = np.array(out_f); out_k = np.array(out_k); out_c = np.array(out_c)
     cg = np.gradient(2*np.pi*out_f, out_k) if len(out_f) > 2 else np.full_like(out_f, np.nan)
     return dict(f=out_f, k=out_k, cph=out_c, cg=cg)
 
-def trace_family(freqs, roots_at_freq, family_label, gap_tol=0.15):
+def trace_family(freqs, roots_at_freq, family_label,
+                 gap_tol=0.15, max_skip=2, merge_df_max=4, merge_tol=0.05):
+    """Trace multi-branch families (L, F) by cph-continuation across frequency.
+
+    At each frequency the open branches are matched to the available roots by a
+    GLOBAL minimum-cost assignment (Hungarian algorithm) on relative |Δcph|,
+    rather than a greedy first-come-first-served scan.  This stops the failure
+    mode where branch A claims a root that physically belongs to branch B,
+    forcing B to be closed and re-opened (artificial split).
+
+    Parameters that govern branch identification:
+        gap_tol      max relative cph step between two consecutive frequencies
+                     for a root to be assigned to the same open branch.
+        max_skip     a branch is kept OPEN for up to this many consecutive
+                     frequencies without a match; if a matching root reappears
+                     within that window, the missing entries are filled with NaN
+                     and the branch resumes.
+        merge_df_max max frequency gap (number of grid steps) for a post-pass
+                     merge of two separate branches whose endpoints are
+                     contiguous in (f, cph) and slope-consistent.
+        merge_tol    max relative cph mismatch (predicted vs actual) for that
+                     post-pass merge.
+    """
+    from scipy.optimize import linear_sum_assignment
+    fs = np.asarray(freqs, float)
+    df0 = fs[1]-fs[0] if len(fs) > 1 else 1.0
     branches = []
-    for f in freqs:
+    for f in fs:
         rt = roots_at_freq(f)
         w = 2*np.pi*f
         cph = w/rt if len(rt) else np.array([])
-        used = [False]*len(rt)
-        for br in branches:
-            if not br['_open']:
-                continue
-            last = br['cph'][-1]
-            best, bi = None, -1
-            for j, c in enumerate(cph):
-                if used[j]:
-                    continue
-                rel = abs(c-last)/last
-                if rel < gap_tol and (best is None or rel < best):
-                    best, bi = rel, j
-            if bi >= 0:
-                used[bi] = True
-                br['f'].append(f); br['k'].append(rt[bi]); br['cph'].append(cph[bi])
-            else:
-                br['_open'] = False
+        # --- global assignment: open branches vs available roots --------------
+        open_brs = [br for br in branches if br['_open']]
+        used_roots = set()
+        if open_brs and len(cph):
+            n_br, n_rt = len(open_brs), len(cph)
+            # cost = relative cph mismatch; > gap_tol -> infinity (forbidden)
+            BIG = 1e6
+            cost = np.full((n_br, n_rt), BIG)
+            for i, br in enumerate(open_brs):
+                last_cph = br['cph'][-1]
+                for j, c in enumerate(cph):
+                    rel = abs(c-last_cph)/last_cph
+                    if rel < gap_tol:
+                        cost[i, j] = rel
+            row, col = linear_sum_assignment(cost)
+            for i, j in zip(row, col):
+                br = open_brs[i]
+                if cost[i, j] < BIG:                # accepted match
+                    used_roots.add(j)
+                    while br['_misses'] > 0:        # fill prior skipped freqs
+                        br['f'].append(br['_skipped_f'].pop(0))
+                        br['k'].append(np.nan); br['cph'].append(np.nan)
+                        br['_misses'] -= 1
+                    br['f'].append(f); br['k'].append(rt[j]); br['cph'].append(cph[j])
+                else:                                # branch unmatched this step
+                    br['_misses'] += 1
+                    br['_skipped_f'].append(f)
+                    if br['_misses'] > max_skip:
+                        br['_open'] = False
+                        br['_skipped_f'] = []
+        else:
+            # no open branches OR no roots: count a miss for every open branch
+            for br in open_brs:
+                br['_misses'] += 1
+                br['_skipped_f'].append(f)
+                if br['_misses'] > max_skip:
+                    br['_open'] = False
+                    br['_skipped_f'] = []
+        # any open branch left unscored by the assignment also counts as a miss
+        for br in open_brs:
+            if br['_open'] and (not br['f'] or br['f'][-1] != f):
+                if br['_misses'] == 0:               # not already counted above
+                    br['_misses'] += 1
+                    br['_skipped_f'].append(f)
+                    if br['_misses'] > max_skip:
+                        br['_open'] = False
+                        br['_skipped_f'] = []
+        # spawn new branches for unused roots
         for j, c in enumerate(cph):
-            if not used[j]:
-                branches.append(dict(f=[f], k=[rt[j]], cph=[c], _open=True))
-    for n, br in enumerate(branches):
-        br['f'] = np.array(br['f']); br['k'] = np.array(br['k']); br['cph'] = np.array(br['cph'])
+            if j not in used_roots:
+                branches.append(dict(f=[f], k=[rt[j]], cph=[c],
+                                     _open=True, _misses=0, _skipped_f=[]))
+    # --- post-pass merge: glue together branches that are obviously the same ---
+    # For each branch in order, try to absorb any later branch whose start is
+    # close in f and consistent with the slope-extrapolated cph of the tail.
+    for br in branches:
+        br.pop('_misses', None); br.pop('_skipped_f', None)
+        br['_alive'] = True
+    branches.sort(key=lambda b: b['f'][0])
+    for i, A in enumerate(branches):
+        if not A['_alive'] or len(A['f']) < 2:
+            continue
+        merged = True
+        while merged:
+            merged = False
+            fA = np.asarray(A['f']); cA = np.asarray(A['cph'])
+            ok = np.isfinite(cA)
+            if ok.sum() < 2:
+                break
+            ftail = fA[ok][-2:]; ctail = cA[ok][-2:]
+            slope = (ctail[1]-ctail[0])/(ftail[1]-ftail[0] + 1e-12)
+            for j, B in enumerate(branches):
+                if j == i or not B['_alive'] or len(B['f']) < 1:
+                    continue
+                fB0 = B['f'][0]; cB0 = B['cph'][0]
+                df = fB0 - fA[-1]
+                if df <= 0 or df > merge_df_max*df0:
+                    continue
+                cph_pred = ctail[1] + slope*(fB0 - ftail[1])
+                if cph_pred <= 0 or abs(cB0-cph_pred)/cph_pred > merge_tol:
+                    continue
+                n_fill = int(round(df/df0)) - 1
+                for kfill in range(n_fill):
+                    A['f'].append(fA[-1] + (kfill+1)*df0)
+                    A['k'].append(np.nan); A['cph'].append(np.nan)
+                A['f'].extend(B['f']); A['k'].extend(B['k']); A['cph'].extend(B['cph'])
+                B['_alive'] = False
+                merged = True
+                break
+    branches = [b for b in branches if b.pop('_alive', True)]
+    # finalize arrays + cg
+    for br in branches:
+        br['f'] = np.asarray(br['f']); br['k'] = np.asarray(br['k']); br['cph'] = np.asarray(br['cph'])
         br.pop('_open', None)
-        if len(br['f']) > 2:
-            br['cg'] = np.gradient(2*np.pi*br['f'], br['k'])
+        ok = np.isfinite(br['k']) & np.isfinite(br['cph']) & (br['k'] > 0)
+        if ok.sum() > 2:
+            cg = np.full_like(br['f'], np.nan)
+            cg[ok] = np.gradient(2*np.pi*br['f'][ok], br['k'][ok])
+            br['cg'] = cg
         else:
             br['cg'] = np.full_like(br['f'], np.nan)
     branches.sort(key=lambda b: b['f'][0])

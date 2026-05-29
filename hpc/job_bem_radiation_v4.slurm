@@ -8,7 +8,9 @@
 #    * --mem here is therefore modest (32 GB is ample for <=120k nodes via FMM).
 #    * per-frequency meshes are built/destroyed in scratch, capping node count.
 #
-#  Fixes vs the v3 job: no hardcoded path; runs in $SCRATCH; sane memory.
+#  Fixes vs the v3 job: no hardcoded path; runs in $SCRATCH; sane memory;
+#                       reuses the existing 'narwhal' conda env by default
+#                       (override with 'export TUSK_ENV=<name_or_path>').
 # =============================================================================
 #SBATCH --job-name=tusk_bem_v4
 #SBATCH --nodes=1
@@ -20,18 +22,37 @@
 #SBATCH --error=bem_v4_%j.err
 # #SBATCH --partition=<your_partition>
 # #SBATCH --account=<your_alloc>
+#SBATCH --export=ALL                # propagate TUSK_ENV from the submit shell
 
 set -euo pipefail
 
 module purge
-module load mpi/openmpi/4.1.8/gcc || module load openmpi || true
+# We don't need a system MPI here -- bempp-cl is shared-memory only and the
+# conda env brings its own dolfinx/MPICH for compatibility (unused here).
+# Loading the cluster openmpi on top of conda-MPICH causes PMI conflicts;
+# the BEM job is single-process, so no MPI module is needed.
 source /softs/tools/conda/2025.06/etc/profile.d/conda.sh
-conda activate "$SLURM_SUBMIT_DIR/tusk"
+
+# Reuse the existing v3 env 'narwhal' by default; override with TUSK_ENV.
+ENV_TARGET="${TUSK_ENV:-narwhal}"
+conda activate "$ENV_TARGET"
+echo "Activated conda env: $ENV_TARGET"
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export BEMPP_FMM_THREADS=$SLURM_CPUS_PER_TASK
 
-python -c "import bempp.api as b; print('bempp', b.__version__, '| FMM:', getattr(b,'fmm_available',lambda:'?')())"
+python -c "
+try:
+    import bempp.api as b
+except ImportError:
+    import bempp_cl.api as b
+print('bempp', b.__version__)
+try:
+    import exafmm
+    print('FMM (exafmm): available')
+except ImportError:
+    print('FMM (exafmm): NOT available -- BEM will use hmat fallback')
+"
 
 # --- run in scratch ----------------------------------------------------------
 RUNDIR="${SCRATCH:-/tmp}/tusk_bem_${SLURM_JOB_ID}"

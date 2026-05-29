@@ -54,9 +54,11 @@ gmsh.write("tusk_surface_v4.msh")
 nn = len(gmsh.model.mesh.getNodes()[0])
 gmsh.finalize()
 
-mem_fmm = 16.0*nn*math.log2(max(nn, 2))*64/2**30
-mem_dense = (nn**2*16)/2**30
+mem_fmm    = (3500.0*nn + 16.0*nn*math.log2(max(nn, 2)))/2**30
+mem_nonloc = (1500.0*nn + 16.0*nn*math.log2(max(nn, 2)))/2**30
+mem_dense  = (nn**2*16)/2**30
 print(f"tusk_surface_v4.msh: ~{nn} nodes, h~{h_el*1e3:.2f} mm "
       f"(lambda0/{ELELAM:.0f} at {F_MAX/1e3:.0f} kHz){' [CAPPED]' if capped else ''}")
-print(f"  FMM working set ~ {mem_fmm:.1f} GB   |   dense would be ~ {mem_dense:.0f} GB "
+print(f"  estimated working set:  fmm ~ {mem_fmm:.2f} GB  |  "
+      f"default_nonlocal ~ {mem_nonloc:.2f} GB  |  dense ~ {mem_dense:.0f} GB  "
       f"(<- v3 failure mode)")

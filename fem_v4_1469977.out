@@ -1,0 +1,42 @@
+Activated conda env: narwhal
+/home/ollivief/.conda/envs/narwhal/bin/python
+dolfinx 0.10.0
+cs~1444 lam_min~49.1mm  h_base~4.09mm h_tip~1.23mm
+  VOL dentine   tag1: 8710 tri6
+  VOL cementum  tag2: 3001 tri6
+  VOL pulp      tag3: 3033 tri6
+  BND jaw_fixed          tag10: 9
+  BND tusk_tip           tag20: 7
+  BND outer_surface      tag30: 758
+  BND inner_surface      tag40: 758
+  BND axis               tag50: 758
+total nodes: 31021
+=== FEM v4 mode: long ===
+[FEM v4] dolfinx 0.10.0 | gmshio path: gmsh
+Info    : Reading 'tusk_axi.msh'...
+Info    : 21 entities
+Info    : 31021 nodes
+Info    : 17034 elements
+Info    : Done reading 'tusk_axi.msh'
+[FEM-disp v4 | MODE=long m=0] L=1.8 dt=2.066e-07 steps=9582 fluid_load=True sensors=400 main_comp=u_r
+  step 0/9582 t=0.000ms max|u|=2.24e-20
+  step 479/9582 t=0.099ms max|u|=1.07e-12
+  step 958/9582 t=0.198ms max|u|=3.24e-13
+  step 1437/9582 t=0.297ms max|u|=3.95e-13
+  step 1916/9582 t=0.396ms max|u|=5.26e-13
+  step 2395/9582 t=0.495ms max|u|=5.26e-13
+  step 2874/9582 t=0.594ms max|u|=5.64e-13
+  step 3353/9582 t=0.693ms max|u|=6.17e-13
+  step 3832/9582 t=0.792ms max|u|=6.90e-13
+  step 4311/9582 t=0.891ms max|u|=4.23e-13
+  step 4790/9582 t=0.990ms max|u|=1.06e-12
+  step 5269/9582 t=1.089ms max|u|=6.86e-13
+  step 5748/9582 t=1.188ms max|u|=7.59e-13
+  step 6227/9582 t=1.287ms max|u|=8.88e-13
+  step 6706/9582 t=1.386ms max|u|=7.64e-13
+  step 7185/9582 t=1.485ms max|u|=9.21e-13
+  step 7664/9582 t=1.584ms max|u|=8.60e-13
+  step 8143/9582 t=1.683ms max|u|=8.73e-13
+  step 8622/9582 t=1.782ms max|u|=8.97e-13
+  step 9101/9582 t=1.881ms max|u|=9.12e-13
+  step 9580/9582 t=1.980ms max|u|=8.68e-13

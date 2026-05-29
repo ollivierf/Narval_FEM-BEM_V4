@@ -40,7 +40,7 @@ R_GUIDE    = 0.0287
 L_APER     = 1.80                 # radiating aperture length [m]
 cL, cT     = C.bulk_velocities(E, NU, RHO)
 
-FREQS  = np.arange(20e3, 200e3+1, 5e3)
+FREQS  = np.arange(20e3, 200e3+1, 1e3)
 THETA  = np.linspace(0.1, 179.9, 720)
 th_rad = np.radians(THETA)
 
@@ -96,47 +96,53 @@ np.savez("data/radiation_v4.npz", freqs=FREQS, theta=THETA, P=P,
          L=L_APER, c0=C0, lobe_pts=lobe_pts)
 
 # ---- FIG A : grid of polar diagrams ---------------------------------------
-sel = FREQS[::4]
+# subsample at a fixed 20 kHz cadence so the grid is the same shape (~10 panels)
+# whether F_STEP=5 kHz or 1 kHz; otherwise the grid would explode at 1 kHz.
+step_panel = max(1, int(round(20e3/(FREQS[1]-FREQS[0]))))
+sel = FREQS[::step_panel]
 ncol = 3; nrow = int(np.ceil(len(sel)/ncol))
-fig, axes = plt.subplots(nrow, ncol, figsize=(11, 3.4*nrow),
+fig, axes = plt.subplots(nrow, ncol, figsize=(11, 2.4*nrow),
                          subplot_kw={"projection": "polar"})
 for ax, f in zip(axes.ravel(), sel):
     i = np.argmin(np.abs(FREQS - f))
-    pdb = 10*np.log10(P[i] + 1e-6)
-    ax.plot(th_rad, np.clip(pdb, -40, 0), color="#0050a0", lw=1.6)
-    ax.plot(-th_rad, np.clip(pdb, -40, 0), color="#0050a0", lw=1.6)
+    pdb = np.clip(10*np.log10(P[i] + 1e-6), -20, 0)
+    # axisymmetric -> draw the half-polar 0..180 deg only (no mirror)
+    ax.plot(th_rad, pdb, color="#0050a0", lw=1.6)
     ax.set_theta_zero_location("N"); ax.set_theta_direction(-1)
-    ax.set_rlim(-40, 0); ax.set_rticks([-30, -20, -10, 0])
+    ax.set_thetamin(0); ax.set_thetamax(180)
+    ax.set_rlim(-20, 0); ax.set_rticks([0, -3, -6, -12, -20])
     ax.set_title(f"{f/1e3:.0f} kHz", fontsize=10, pad=12)
     ax.set_thetagrids([0, 30, 60, 90, 120, 150, 180])
 for ax in axes.ravel()[len(sel):]:
     ax.axis("off")
-fig.suptitle("Rayonnement champ lointain v4 (modes L+F ; torsion sombre exclue)",
-             fontsize=12)
+fig.suptitle("Rayonnement champ lointain v4 — demi-polaires (axisymétrique)\n"
+             "modes L+F ; torsion sombre exclue", fontsize=12)
 fig.tight_layout(); fig.savefig("figures/radiation_polar_grid_v4.png", dpi=140); plt.close(fig)
 print("wrote figures/radiation_polar_grid_v4.png")
 
 # ---- FIG B : frequency-angle map ------------------------------------------
 fig, ax = plt.subplots(figsize=(8.4, 5.4))
 im = ax.pcolormesh(THETA, FREQS/1e3, 10*np.log10(P + 1e-6),
-                   shading="auto", cmap="turbo", vmin=-30, vmax=0)
+                   shading="auto", cmap="turbo", vmin=-20, vmax=0)
 if len(lobe_pts):
     ax.scatter(lobe_pts[:, 1], lobe_pts[:, 0], s=9, c="white", edgecolor="k",
                linewidth=.3, label=r"lobes $\arccos(c_0/c_\phi)$ par mode (L,F)")
-fig.colorbar(im, label="|p|² normalisé [dB]")
+fig.colorbar(im, label="|p|² normalisé [dB]", ticks=[0, -3, -6, -12, -20])
 ax.set_xlabel("angle depuis l'axe $\\theta$ [deg]"); ax.set_ylabel("fréquence [kHz]")
 ax.set_title("Carte fréquence–angle v4 (signature LWA, modes rayonnants)")
 ax.legend(fontsize=8, loc="upper right"); ax.set_xlim(0, 180)
 fig.tight_layout(); fig.savefig("figures/radiation_fmap_v4.png", dpi=140); plt.close(fig)
 print("wrote figures/radiation_fmap_v4.png")
 
-# ---- individual polars ----------------------------------------------------
+# ---- individual polars (half-polar, 20 dB dynamics) -----------------------
 for i, f in enumerate(FREQS):
-    fig = plt.figure(figsize=(4, 4)); ax = fig.add_subplot(111, projection="polar")
-    pdb = np.clip(10*np.log10(P[i] + 1e-6), -40, 0)
-    ax.plot(th_rad, pdb, "#0050a0", lw=1.5); ax.plot(-th_rad, pdb, "#0050a0", lw=1.5)
+    fig = plt.figure(figsize=(4.4, 2.6)); ax = fig.add_subplot(111, projection="polar")
+    pdb = np.clip(10*np.log10(P[i] + 1e-6), -20, 0)
+    ax.plot(th_rad, pdb, "#0050a0", lw=1.5)
     ax.set_theta_zero_location("N"); ax.set_theta_direction(-1)
-    ax.set_rlim(-40, 0); ax.set_title(f"{f/1e3:.0f} kHz", fontsize=11)
+    ax.set_thetamin(0); ax.set_thetamax(180)
+    ax.set_rlim(-20, 0); ax.set_rticks([0, -3, -6, -12, -20])
+    ax.set_title(f"{f/1e3:.0f} kHz", fontsize=11)
     fig.tight_layout()
     fig.savefig(f"figures/radiation_polar_all_v4/polar_{f/1e3:03.0f}kHz.png", dpi=110)
     plt.close(fig)
