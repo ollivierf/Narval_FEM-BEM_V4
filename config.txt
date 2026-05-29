@@ -1,0 +1,50 @@
+# config.txt
+# ==========
+
+# Toutes les dimensions en mètres, fréquences en Hz, angles en degrés.
+
+# ─── Géométrie de la dent ────────────────────────────────────────────────────
+geometry:
+  tusk_length_total:       1.80      # longueur totale du tusk [m]
+  outer_radius_base:       0.0287    # rayon extérieur à la base [m]  (≈ 28.7 mm)
+  outer_radius_tip:        0.0074    # rayon extérieur à la pointe [m] (≈  7.4 mm)
+  inner_radius_base:       0.0060    # rayon du canal pulpaire à la base [m]
+  inner_radius_tip:        0.0010    # rayon du canal pulpaire à la pointe [m]
+  cementum_thickness_base: 0.0020   # épaisseur couche de cément à la base [m]
+  cementum_thickness_tip:  0.0015   # épaisseur couche de cément à la pointe [m]
+
+# ─── Maillage gmsh ───────────────────────────────────────────────────────────
+mesh:
+  h_max:             0.010   # taille maximale des éléments [m]
+  h_min:             0.001   # taille minimale (surfaces) [m]
+  polynomial_order:  2       # ordre polynomial des éléments (1=P1, 2=P2)
+  domain_tags:
+    dentine:   1
+    cementum:  2
+    pulp:      3
+  boundary_tags:
+    jaw_fixed:      10   # interface mâchoire (déplacement imposé)
+    tusk_tip:       20   # extrémité de la pointe (surface libre)
+    outer_surface:  30   # surface extérieure (interface eau/dentine+cément)
+    inner_surface:  40   # surface du canal pulpaire
+
+# ─── Propriétés matériaux (surcharge optionnelle des valeurs codées en dur) ──
+materials:
+  dentine:
+    E:                  10.3e9   # Module de Young [Pa]
+    nu:                 0.30     # Coefficient de Poisson
+    rho:                1900.0   # Masse volumique [kg/m³]
+    damping_loss_factor: 0.02    # Facteur de perte hystérétique η
+  cementum:
+    E:                  5.3e9
+    nu:                 0.28
+    rho:                1700.0
+    damping_loss_factor: 0.03
+  pulp:
+    E:                  0.5e6
+    nu:                 0.49
+    rho:                1050.0
+    damping_loss_factor: 0.10
+  fluid:
+    rho:   1025.0   # eau arctique [kg/m³]
+    c:     1450.0   # célérité [m/s]

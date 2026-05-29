@@ -1,0 +1,50 @@
+# =============================================================================
+#  config_refined.yaml  --  Donnees biomecaniques affinees (defense de narval)
+#  Toutes les valeurs mecaniques de la dentine/cement de narval proviennent de
+#  MESURES DIRECTES de la litterature (et non plus d'estimations a priori).
+# =============================================================================
+#
+#  SOURCES (mesures directes sur defense de Monodon monoceros) :
+#   [1] Brear, Currey, Pond & Ramsay (1990) Arch. Oral Biol. 35(8):615-621.
+#       Essais traction/flexion : la dentine et le cement de narval ont un
+#       module d'Young FAIBLE, comparable au bois de renne (antler-like) ;
+#       cement de rigidite anormalement basse. -> ~10 GPa dentine, ~5 GPa cement.
+#   [2] Currey, Brear, Kingsley & Ramsay (1993) J. Zool. 230:411-423.
+#       "Mechanical design of the tusk" : conception mecanique d'ensemble.
+#   [3] Currey, Brear & Zioupos (1994) J. Biomech. 27(7):885-897.
+#       FORTE ANISOTROPIE fibreuse : le module hors-axe chute a ~45% du module
+#       axial (et la resistance a ~35%). La direction axiale (~axe des fibres,
+#       ~axe de propagation) est la direction RIGIDE.
+#   [4] Grandfield et al. (2014) Proc. IMechE H 228(8):754-767.
+#       Nano-indentation de la jonction cement-dentine (CDJ) : 2.2-3 GPa
+#       (zone de transition molle uniquement, pas la dentine massive).
+#   Eau arctique : c0 ~ 1450 m/s (T ~ -1.5 C, S ~ 34.5 ppt) ; rho0 ~ 1025.
+#   (Le document de reference utilisait 1482 m/s, valeur d'eau de mer generique.)
+#
+#  STATUT : modele ISOTROPE equivalent, pris dans la DIRECTION AXIALE (rigide).
+#  L'anisotropie [3] est une limite documentee ; un modele orthotrope
+#  utiliserait E_axial (ci-dessous) et E_radial ~ 0.45 * E_axial.
+# =============================================================================
+
+materials:
+  dentine:                 # couche mineralisee principale (paroi guidante)
+    E:   10.3e9            # Pa  module axial (direction des fibres) [1,3]
+    nu:  0.30              # coeff. de Poisson (estimation tissus mineralises)
+    rho: 1900.0           # kg/m^3 [1]
+    damping_loss_factor: 0.02
+    E_radial_factor: 0.45  # [3] module hors-axe / module axial (modele orthotrope)
+  cementum:                # couche externe poreuse, rigidite faible [1]
+    E:   5.3e9
+    nu:  0.28
+    rho: 1700.0
+    damping_loss_factor: 0.03
+  pulp:                    # tissu mou vascularise (quasi-fluide)
+    E:   0.5e6
+    nu:  0.49
+    rho: 1050.0
+    damping_loss_factor: 0.10
+  fluid:                   # eau de mer ARCTIQUE (froide, salee)
+    rho: 1025.0
+    c:   1450.0
+
+# geometrie : inchangee (cf. config.txt), cone axisymetrique, helice mise de cote
